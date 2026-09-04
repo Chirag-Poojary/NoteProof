@@ -4,14 +4,15 @@
  * useNoteProofPipeline.ts
  * ─────────────────────────────────────────────────────────────────────────────
  * Master pipeline orchestrator for NoteProof's two-model architecture:
- *   Raw Frame → YOLO Detector → Gate → Crop with Padding → Classifier → Result
+ *   Raw Frame → YOLO Detector → Gate → Visual Confirmation → Crop → Classifier → Result
  *
- * Manages explicit PipelineState state machine transitions.
+ * Ensures the YOLO bounding box is explicitly rendered on screen for visual confirmation
+ * before classification and authentication results are produced.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import { useState, useCallback } from "react";
-import type { PipelineState, ClassificationResult } from "./modelConfig";
+import type { PipelineState } from "./modelConfig";
 import { useYoloDetector } from "./useYoloDetector";
 import { useOnnx } from "./useOnnx";
 import { cropWithPadding } from "./imagePipeline";
@@ -19,6 +20,9 @@ import { generateBoxedImageDataUrl } from "@/components/DetectionOverlay";
 
 export interface UseNoteProofPipelineReturn {
   state: PipelineState;
+  isDetectorReady: boolean;
+  isInitializingDetector: boolean;
+  initDetector: () => Promise<void>;
   resetState: () => void;
   capture: (videoElement: HTMLVideoElement | null) => Promise<void>;
 }
@@ -26,7 +30,13 @@ export interface UseNoteProofPipelineReturn {
 export function useNoteProofPipeline(): UseNoteProofPipelineReturn {
   const [state, setState] = useState<PipelineState>({ stage: "idle" });
 
-  const { detect, detectorError } = useYoloDetector();
+  const {
+    detect,
+    detectorError,
+    isDetectorReady,
+    isInitializingDetector,
+    initDetector,
+  } = useYoloDetector();
   const { runInference, error: classifierError } = useOnnx();
 
   const resetState = useCallback(() => {
@@ -66,19 +76,25 @@ export function useNoteProofPipeline(): UseNoteProofPipelineReturn {
 
         // Step 4: Detection box found! Generate boxed preview image
         const boxedImage = generateBoxedImageDataUrl(rawCanvas, detection.box);
+
+        // Step 5: Render stage 'detected' so YOLO bounding box is shown on screen
         setState({
           stage: "detected",
           box: detection.box,
           boxedImage,
         });
 
-        // Step 5: Stage -> classifying
+        // Step 6: MANDATORY VISUAL CONFIRMATION PAUSE (1.2 seconds)
+        // Ensures user sees the YOLO bounding box and confidence score on screen before classification
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+
+        // Step 7: Stage -> classifying
         setState({ stage: "classifying", boxedImage });
 
-        // Step 6: Crop note region with PAD_FRAC (8%) padding to 224×224
+        // Step 8: Crop note region with PAD_FRAC (8%) padding to 224×224
         const croppedCanvas = cropWithPadding(rawCanvas, detection.box);
 
-        // Step 7: Run EfficientNetB3 classifier
+        // Step 9: Run EfficientNetB3 classifier
         const result = await runInference(croppedCanvas);
 
         if (!result) {
@@ -89,7 +105,7 @@ export function useNoteProofPipeline(): UseNoteProofPipelineReturn {
           return;
         }
 
-        // Step 8: Done!
+        // Step 10: Done! Show final result modal
         setState({
           stage: "done",
           result,
@@ -106,6 +122,9 @@ export function useNoteProofPipeline(): UseNoteProofPipelineReturn {
 
   return {
     state,
+    isDetectorReady,
+    isInitializingDetector,
+    initDetector,
     resetState,
     capture,
   };

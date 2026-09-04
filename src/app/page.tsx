@@ -19,7 +19,14 @@ export default function ScannerPage() {
     startCamera,
   } = useCamera();
 
-  const { state: pipelineState, resetState, capture } = useNoteProofPipeline();
+  const {
+    state: pipelineState,
+    isDetectorReady,
+    isInitializingDetector,
+    initDetector,
+    resetState,
+    capture,
+  } = useNoteProofPipeline();
 
   // Whether the user has tapped "Allow Camera" yet
   const [cameraStarted, setCameraStarted] = useState(false);
@@ -27,26 +34,41 @@ export default function ScannerPage() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   // ── Called by splash screen button ──────────────────────────────────────
+  // Starts camera stream and pre-initializes YOLO model in parallel
   const handleStartCamera = useCallback(() => {
     setCameraStarted(true);
     startCamera();
-  }, [startCamera]);
+    initDetector();
+  }, [startCamera, initDetector]);
+
+  // Pre-initialize YOLO model if camera already allowed
+  useEffect(() => {
+    if (cameraStarted && !isDetectorReady && !isInitializingDetector) {
+      initDetector();
+    }
+  }, [cameraStarted, isDetectorReady, isInitializingDetector, initDetector]);
 
   // ── Handle Capture ────────────────────────────────────────────────────────
   const handleCapture = useCallback(async () => {
-    if (!cameraReady || pipelineState.stage === "detecting" || pipelineState.stage === "classifying") {
+    if (
+      !cameraReady ||
+      !isDetectorReady ||
+      pipelineState.stage === "detecting" ||
+      pipelineState.stage === "detected" ||
+      pipelineState.stage === "classifying"
+    ) {
       return;
     }
     setToastMsg(null);
     await capture(videoRef.current);
-  }, [cameraReady, pipelineState.stage, capture, videoRef]);
+  }, [cameraReady, isDetectorReady, pipelineState.stage, capture, videoRef]);
 
   // ── React to Pipeline State transitions ────────────────────────────────────
   useEffect(() => {
     if (pipelineState.stage === "done") {
       setModalOpen(true);
     } else if (pipelineState.stage === "not_found") {
-      setToastMsg("No note detected — please frame the currency note and retake.");
+      setToastMsg("No note detected — please center the note in frame and retake.");
     } else if (pipelineState.stage === "error") {
       setToastMsg(pipelineState.message);
     }
@@ -87,12 +109,12 @@ export default function ScannerPage() {
         </div>
       )}
 
-      {/* Main Viewfinder (always mounted to maintain stream continuity) */}
+      {/* Main Viewfinder (always mounted to maintain live video stream continuity) */}
       <CameraViewfinder videoRef={videoRef} isReady={cameraReady} />
 
-      {/* Detection Overlay shown over live camera during detection/classification */}
+      {/* Detection Overlay showing the YOLO bounding box & visual confirmation */}
       {boxedImage && (pipelineState.stage === "detected" || pipelineState.stage === "classifying") && (
-        <div className="absolute inset-0 z-20 p-4 pb-28 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in">
+        <div className="absolute inset-0 z-20 p-4 pb-28 flex items-center justify-center bg-black/80 backdrop-blur-sm">
           <DetectionOverlay boxedImage={boxedImage} />
         </div>
       )}
@@ -121,24 +143,36 @@ export default function ScannerPage() {
             <span className="tracking-wide">NoteProof</span>
           </div>
           <span className="text-[10px] font-bold tracking-widest uppercase text-gray-800 bg-white/80 px-2 py-0.5 rounded-full shadow-sm backdrop-blur-md border border-gray-200">
-            Two-Model AI Verification
+            YOLO26 + EfficientNet Architecture
           </span>
         </div>
       </header>
 
-      {/* Loading indicator overlay during inference steps */}
+      {/* Loading & Bounding Box Banner Status Overlay */}
       {isProcessing && (
-        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white px-5 py-2.5 rounded-full shadow-xl backdrop-blur-md border border-white/10 flex items-center gap-3">
-          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white px-5 py-2.5 rounded-full shadow-xl backdrop-blur-md border border-emerald-500/30 flex items-center gap-3">
+          {pipelineState.stage === "detected" ? (
+            <div className="w-3.5 h-3.5 rounded-full bg-emerald-400 animate-pulse" />
+          ) : (
+            <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          )}
           <span className="text-xs font-bold tracking-wide">
-            {pipelineState.stage === "detecting" && "Detecting note…"}
-            {pipelineState.stage === "detected" && "Note located!"}
-            {pipelineState.stage === "classifying" && "Verifying authenticity…"}
+            {pipelineState.stage === "detecting" && "1/2: YOLO Detecting Note Location…"}
+            {pipelineState.stage === "detected" && "✔ YOLO Bounding Box Located!"}
+            {pipelineState.stage === "classifying" && "2/2: Verifying Currency Authenticity…"}
           </span>
         </div>
       )}
 
-      {/* Camera Permission or Failure Alert */}
+      {/* Model Loading Readiness Indicator */}
+      {cameraStarted && cameraReady && !isDetectorReady && !isProcessing && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 bg-amber-950/90 text-amber-200 px-4 py-2 rounded-full shadow-lg backdrop-blur-md border border-amber-500/30 flex items-center gap-2 text-xs font-bold">
+          <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+          Preparing AI Note Detector…
+        </div>
+      )}
+
+      {/* Camera Error Alert */}
       {cameraError && (
         <div className="camera-error-panel" role="alert">
           {cameraError === "NOT_ALLOWED" ? (
@@ -149,8 +183,8 @@ export default function ScannerPage() {
                 <br />
                 <br />
                 <strong>To fix this:</strong>
-                <br />1. Tap the lock icon 🔒 (or settings menu) in your URL bar.
-                <br />2. Go to <strong>Permissions</strong> and Allow camera.
+                <br />1. Tap the lock icon 🔒 in your URL bar.
+                <br />2. Allow camera access.
                 <br />3. Tap reload below.
               </p>
               <button
@@ -180,7 +214,7 @@ export default function ScannerPage() {
       <CaptureButton
         onCapture={handleCapture}
         isLoading={isProcessing}
-        disabled={!cameraReady || isProcessing}
+        disabled={!cameraReady || !isDetectorReady || isProcessing}
       />
 
       {/* Results bottom sheet modal */}
