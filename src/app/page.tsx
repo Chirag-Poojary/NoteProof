@@ -87,13 +87,14 @@ export default function ScannerPage() {
         </div>
       )}
 
-      {/* Main Viewfinder / Detection Overlay */}
-      {boxedImage && (pipelineState.stage === "detected" || pipelineState.stage === "classifying") ? (
-        <div className="absolute inset-0 z-10 p-4 pb-28 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      {/* Main Viewfinder (always mounted to maintain stream continuity) */}
+      <CameraViewfinder videoRef={videoRef} isReady={cameraReady} />
+
+      {/* Detection Overlay shown over live camera during detection/classification */}
+      {boxedImage && (pipelineState.stage === "detected" || pipelineState.stage === "classifying") && (
+        <div className="absolute inset-0 z-20 p-4 pb-28 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in">
           <DetectionOverlay boxedImage={boxedImage} />
         </div>
-      ) : (
-        <CameraViewfinder videoRef={videoRef} isReady={cameraReady} />
       )}
 
       {/* App Header */}

@@ -112,6 +112,16 @@ export function useCamera(): UseCameraReturn {
     return canvas;
   }, [isReady]);
 
+  // Ensure video element always keeps the active stream attached
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (video && stream && video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+  }, [isReady]);
+
   // Stop camera tracks on unmount to release hardware
   useEffect(() => {
     return () => stopCamera();
