@@ -95,27 +95,20 @@ export function useCamera(): UseCameraReturn {
   }, []);
 
   /**
-   * Draws the current video frame onto an off-screen canvas
-   * resized to INPUT_SIZE × INPUT_SIZE and returns the canvas.
+   * Draws the current video frame onto an off-screen canvas at native
+   * video resolution (raw full frame, no pre-crop) and returns the canvas.
    */
   const captureFrame = useCallback((): HTMLCanvasElement | null => {
     const video = videoRef.current;
-    if (!video || !isReady) return null;
+    if (!video || !isReady || video.videoWidth === 0) return null;
 
     const canvas = document.createElement("canvas");
-    canvas.width = INPUT_SIZE;
-    canvas.height = INPUT_SIZE;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
 
-    // Centre-crop: take the largest square from the video and scale to INPUT_SIZE
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const side = Math.min(vw, vh);
-    const sx = (vw - side) / 2;
-    const sy = (vh - side) / 2;
-    ctx.drawImage(video, sx, sy, side, side, 0, 0, INPUT_SIZE, INPUT_SIZE);
-
+    ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
     return canvas;
   }, [isReady]);
 

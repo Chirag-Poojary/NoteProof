@@ -1,14 +1,14 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import CameraViewfinder from "@/components/CameraViewfinder";
 import CaptureButton from "@/components/CaptureButton";
 import ResultModal from "@/components/ResultModal";
 import ErrorToast from "@/components/ErrorToast";
 import CameraSplash from "@/components/CameraSplash";
+import DetectionOverlay from "@/components/DetectionOverlay";
 import { useCamera } from "@/lib/useCamera";
-import { useOnnx } from "@/lib/useOnnx";
-import type { InferenceResult } from "@/lib/modelConfig";
+import { useNoteProofPipeline } from "@/lib/useNoteProofPipeline";
 
 export default function ScannerPage() {
   const {
@@ -19,62 +19,66 @@ export default function ScannerPage() {
     startCamera,
   } = useCamera();
 
-  const { isLoading, error: onnxError, runInference } = useOnnx();
+  const { state: pipelineState, resetState, capture } = useNoteProofPipeline();
 
   // Whether the user has tapped "Allow Camera" yet
   const [cameraStarted, setCameraStarted] = useState(false);
-
-  const [result, setResult] = useState<InferenceResult | null>(null);
-  const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  // ── Called by the splash screen button ────────────────────────────────────
-  // Must be a direct click handler so Android Chrome shows the permission dialog
+  // ── Called by splash screen button ──────────────────────────────────────
   const handleStartCamera = useCallback(() => {
     setCameraStarted(true);
     startCamera();
   }, [startCamera]);
 
-  // ── Capture + infer ────────────────────────────────────────────────────────
+  // ── Handle Capture ────────────────────────────────────────────────────────
   const handleCapture = useCallback(async () => {
-    if (!cameraReady || isLoading) return;
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 224;
-    canvas.height = 224;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // Centre-square crop → 224×224 (matches val_transform in notebook)
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const side = Math.min(vw, vh);
-    const sx = (vw - side) / 2;
-    const sy = (vh - side) / 2;
-    ctx.drawImage(video, sx, sy, side, side, 0, 0, 224, 224);
-
-    setThumbnail(canvas.toDataURL("image/jpeg", 0.85));
-
-    const inferenceResult = await runInference(canvas);
-    if (!inferenceResult) {
-      setToastMsg(onnxError ?? "Inference failed. Please try again.");
+    if (!cameraReady || pipelineState.stage === "detecting" || pipelineState.stage === "classifying") {
       return;
     }
+    setToastMsg(null);
+    await capture(videoRef.current);
+  }, [cameraReady, pipelineState.stage, capture, videoRef]);
 
-    setResult(inferenceResult);
-    setModalOpen(true);
-  }, [cameraReady, isLoading, videoRef, runInference, onnxError]);
+  // ── React to Pipeline State transitions ────────────────────────────────────
+  useEffect(() => {
+    if (pipelineState.stage === "done") {
+      setModalOpen(true);
+    } else if (pipelineState.stage === "not_found") {
+      setToastMsg("No note detected — please frame the currency note and retake.");
+    } else if (pipelineState.stage === "error") {
+      setToastMsg(pipelineState.message);
+    }
+  }, [pipelineState]);
 
-  const handleCloseModal  = useCallback(() => setModalOpen(false), []);
-  const handleDismissToast = useCallback(() => setToastMsg(null), []);
+  const handleCloseModal = useCallback(() => {
+    setModalOpen(false);
+    resetState();
+  }, [resetState]);
 
-  const activeError = cameraErrorMsg ?? onnxError;
+  const handleDismissToast = useCallback(() => {
+    setToastMsg(null);
+    if (pipelineState.stage === "not_found" || pipelineState.stage === "error") {
+      resetState();
+    }
+  }, [pipelineState.stage, resetState]);
 
-  // ── Main scanner UI ────────────────────────────────────────────────────────
+  const isProcessing =
+    pipelineState.stage === "detecting" ||
+    pipelineState.stage === "classifying" ||
+    pipelineState.stage === "detected";
+
+  const boxedImage =
+    pipelineState.stage === "detected" ||
+    pipelineState.stage === "classifying" ||
+    pipelineState.stage === "done"
+      ? pipelineState.boxedImage
+      : null;
+
+  const classificationResult =
+    pipelineState.stage === "done" ? pipelineState.result : null;
+
   return (
     <main id="scanner-main" className="scanner-root" aria-label="Currency scanner">
       {!cameraStarted && (
@@ -83,28 +87,57 @@ export default function ScannerPage() {
         </div>
       )}
 
-      <CameraViewfinder videoRef={videoRef} isReady={cameraReady} />
+      {/* Main Viewfinder / Detection Overlay */}
+      {boxedImage && (pipelineState.stage === "detected" || pipelineState.stage === "classifying") ? (
+        <div className="absolute inset-0 z-10 p-4 pb-28 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <DetectionOverlay boxedImage={boxedImage} />
+        </div>
+      ) : (
+        <CameraViewfinder videoRef={videoRef} isReady={cameraReady} />
+      )}
 
+      {/* App Header */}
       <header className="app-header" role="banner">
         <div className="flex flex-col items-center gap-1 mt-2">
           <div className="app-badge">
             <svg
-              width="20" height="20" viewBox="0 0 24 24" fill="none"
-              stroke="#16a34a" strokeWidth="2.5"
-              strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#16a34a"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              <path d="M6 3h12"/>
-              <path d="M6 8h12"/>
-              <path d="m6 13 8.5 8"/>
-              <path d="M6 13h3"/>
-              <path d="M9 13c6.667 0 6.667-10 0-10"/>
+              <path d="M6 3h12" />
+              <path d="M6 8h12" />
+              <path d="m6 13 8.5 8" />
+              <path d="M6 13h3" />
+              <path d="M9 13c6.667 0 6.667-10 0-10" />
             </svg>
             <span className="tracking-wide">NoteProof</span>
           </div>
-          <span className="text-[10px] font-bold tracking-widest uppercase text-gray-800 bg-white/80 px-2 py-0.5 rounded-full shadow-sm backdrop-blur-md border border-gray-200">Noticing Notes</span>
+          <span className="text-[10px] font-bold tracking-widest uppercase text-gray-800 bg-white/80 px-2 py-0.5 rounded-full shadow-sm backdrop-blur-md border border-gray-200">
+            Two-Model AI Verification
+          </span>
         </div>
       </header>
 
+      {/* Loading indicator overlay during inference steps */}
+      {isProcessing && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white px-5 py-2.5 rounded-full shadow-xl backdrop-blur-md border border-white/10 flex items-center gap-3">
+          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          <span className="text-xs font-bold tracking-wide">
+            {pipelineState.stage === "detecting" && "Detecting note…"}
+            {pipelineState.stage === "detected" && "Note located!"}
+            {pipelineState.stage === "classifying" && "Verifying authenticity…"}
+          </span>
+        </div>
+      )}
+
+      {/* Camera Permission or Failure Alert */}
       {cameraError && (
         <div className="camera-error-panel" role="alert">
           {cameraError === "NOT_ALLOWED" ? (
@@ -112,11 +145,12 @@ export default function ScannerPage() {
               <h3 className="text-xl font-black text-gray-900 mb-3">Camera Blocked</h3>
               <p className="text-sm font-medium text-gray-600 mb-6 leading-relaxed">
                 Your browser has blocked camera access. The app cannot ask for permission again automatically.
-                <br /><br />
+                <br />
+                <br />
                 <strong>To fix this:</strong>
-                <br />1. Tap the lock icon 🔒 (or settings menu) in your URL bar at the top of the screen.
-                <br />2. Go to <strong>Permissions</strong> and Allow the camera.
-                <br />3. Tap the button below to reload.
+                <br />1. Tap the lock icon 🔒 (or settings menu) in your URL bar.
+                <br />2. Go to <strong>Permissions</strong> and Allow camera.
+                <br />3. Tap reload below.
               </p>
               <button
                 onClick={() => window.location.reload()}
@@ -141,21 +175,24 @@ export default function ScannerPage() {
         </div>
       )}
 
+      {/* Capture trigger button */}
       <CaptureButton
         onCapture={handleCapture}
-        isLoading={isLoading}
-        disabled={!cameraReady || isLoading}
+        isLoading={isProcessing}
+        disabled={!cameraReady || isProcessing}
       />
 
+      {/* Results bottom sheet modal */}
       <ResultModal
-        result={result}
-        thumbnail={thumbnail}
+        result={classificationResult}
+        previewImage={boxedImage}
         isOpen={modalOpen}
         onClose={handleCloseModal}
       />
 
+      {/* Toast notifications */}
       <ErrorToast
-        message={toastMsg ?? (activeError && !modalOpen ? activeError : null)}
+        message={toastMsg ?? (cameraErrorMsg && !modalOpen ? cameraErrorMsg : null)}
         onDismiss={handleDismissToast}
       />
     </main>

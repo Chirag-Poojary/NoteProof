@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useEffect, useRef, useCallback } from "react";
-import type { InferenceResult } from "@/lib/modelConfig";
+import type { InferenceResult, ClassificationResult } from "@/lib/modelConfig";
 
 interface ResultModalProps {
-  result: InferenceResult | null;
-  thumbnail: string | null; // data URL from captured canvas
+  result: InferenceResult | ClassificationResult | null;
+  previewImage?: string | null;
+  thumbnail?: string | null; // legacy fallback
   isOpen: boolean;
   onClose: () => void;
 }
@@ -17,6 +18,7 @@ interface ResultModalProps {
  */
 export default function ResultModal({
   result,
+  previewImage,
   thumbnail,
   isOpen,
   onClose,
@@ -24,6 +26,8 @@ export default function ResultModal({
   const sheetRef = useRef<HTMLDivElement>(null);
   const dragStartY = useRef<number>(0);
   const dragCurrentY = useRef<number>(0);
+
+  const displayImage = previewImage ?? thumbnail;
 
   // Close on Escape key
   useEffect(() => {
@@ -68,6 +72,7 @@ export default function ResultModal({
 
   const confidencePct = Math.round(result.denominationConfidence * 100);
   const authPct = Math.round(result.authenticityScore * 100);
+  const authStatus = result.authStatus ?? (result.authenticityScore >= 0.5 ? "genuine" : "fake");
 
   return (
     <>
@@ -107,10 +112,10 @@ export default function ResultModal({
 
         {/* Header row */}
         <div className="modal-sheet__header">
-          {thumbnail && (
+          {displayImage && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={thumbnail}
+              src={displayImage}
               alt="Captured currency note thumbnail"
               className="modal-sheet__thumb"
               width={80}
@@ -127,14 +132,24 @@ export default function ResultModal({
             </p>
           </div>
 
-          {/* Genuine / Fake chip */}
-          <div
-            className={`authenticity-chip ${result.isGenuine ? "authenticity-chip--genuine" : "authenticity-chip--fake"}`}
-            aria-label={`Note is ${result.isGenuine ? "genuine" : "fake"}`}
-          >
-            <span className="authenticity-chip__dot" aria-hidden="true" />
-            {result.isGenuine ? "Genuine" : "Fake"}
-          </div>
+          {/* Genuine / Fake / Uncertain chip */}
+          {authStatus === "uncertain" ? (
+            <div
+              className="authenticity-chip authenticity-chip--uncertain"
+              aria-label="Note authenticity is uncertain — retake in better light"
+            >
+              <span className="authenticity-chip__dot" aria-hidden="true" />
+              Uncertain — retake
+            </div>
+          ) : (
+            <div
+              className={`authenticity-chip ${authStatus === "genuine" ? "authenticity-chip--genuine" : "authenticity-chip--fake"}`}
+              aria-label={`Note is ${authStatus === "genuine" ? "genuine" : "fake"}`}
+            >
+              <span className="authenticity-chip__dot" aria-hidden="true" />
+              {authStatus === "genuine" ? "Genuine" : "Fake"}
+            </div>
+          )}
         </div>
 
         {/* Confidence bars */}

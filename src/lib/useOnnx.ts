@@ -31,8 +31,12 @@ import {
   IMAGENET_MEAN,
   IMAGENET_STD,
   DENOMINATION_CLASSES,
+  AUTH_UNCERTAIN_BAND,
+  type AuthStatus,
+  type ClassificationResult,
   type InferenceResult,
 } from "./modelConfig";
+import { fetchAndCacheModel } from "./modelCache";
 
 // ── Node name constants (from torch.onnx.export in Currency.ipynb) ──────────
 const INPUT_NODE  = "input_image";
@@ -44,79 +48,6 @@ export interface UseOnnxReturn {
   isModelReady: boolean;
   error: string | null;
   runInference: (canvas: HTMLCanvasElement) => Promise<InferenceResult | null>;
-}
-
-/**
- * fetchAndCacheModel
- * Downloads the ONNX model and caches it persistently in IndexedDB.
- * Subsequent visits will load instantly from disk, completely bypassing the network.
- */
-async function fetchAndCacheModel(modelUrl: string): Promise<ArrayBuffer> {
-  const DB_NAME = "onnx-model-cache";
-  const STORE_NAME = "models";
-  const MODEL_KEY = modelUrl;
-
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    
-    request.onupgradeneeded = (e) => {
-      const db = (e.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-
-    request.onsuccess = (e) => {
-      const db = (e.target as IDBOpenDBRequest).result;
-      const transaction = db.transaction([STORE_NAME], "readonly");
-      const store = transaction.objectStore(STORE_NAME);
-      const getReq = store.get(MODEL_KEY);
-
-      getReq.onsuccess = async () => {
-        if (getReq.result) {
-          console.log("[OnnxRuntime] Loaded model instantly from IndexedDB cache");
-          resolve(getReq.result);
-        } else {
-          console.log("[OnnxRuntime] Fetching model from network...", modelUrl);
-          try {
-            const response = await fetch(modelUrl);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            const arrayBuffer = await response.arrayBuffer();
-            
-            // Save to IDB for next time
-            const writeTx = db.transaction([STORE_NAME], "readwrite");
-            const writeStore = writeTx.objectStore(STORE_NAME);
-            writeStore.put(arrayBuffer, MODEL_KEY);
-            
-            console.log("[OnnxRuntime] Saved model to IndexedDB cache for future visits");
-            resolve(arrayBuffer);
-          } catch (err) {
-            reject(err);
-          }
-        }
-      };
-
-      getReq.onerror = async () => {
-        // Fallback to standard fetch if IndexedDB read fails
-        try {
-          const response = await fetch(modelUrl);
-          resolve(await response.arrayBuffer());
-        } catch(err) {
-          reject(err);
-        }
-      };
-    };
-
-    request.onerror = async () => {
-      // Fallback to standard fetch if IndexedDB is blocked (e.g. Incognito mode)
-      try {
-        const response = await fetch(modelUrl);
-        resolve(await response.arrayBuffer());
-      } catch(err) {
-        reject(err);
-      }
-    };
-  });
 }
 
 export function useOnnx(): UseOnnxReturn {
@@ -188,7 +119,7 @@ export function useOnnx(): UseOnnxReturn {
 
         /* 3. Create (or reuse) the InferenceSession */
         if (!sessionRef.current) {
-          console.log("[OnnxRuntime] Preparing model:", MODEL_PATH);
+          console.log("[OnnxRuntime] Preparing classifier model:", MODEL_PATH);
           
           // Load from IndexedDB cache or fetch from network
           const modelBuffer = await fetchAndCacheModel(MODEL_PATH);
@@ -226,13 +157,18 @@ export function useOnnx(): UseOnnxReturn {
         const denomination         = DENOMINATION_CLASSES[denomIdx] ?? `Class ${denomIdx}`;
         const denominationConfidence = denomProbs[denomIdx];
 
-        /* 7. Parse auth_logits → [1] → sigmoid → ≥ 0.5 = Genuine
-         *    The model uses BCEWithLogitsLoss, so the output is a raw logit.
-         *    auth_logits.squeeze(-1) in forward() makes it shape [batch].
-         *    For batch=1, results[AUTH_NODE].data has exactly 1 element.     */
+        /* 7. Parse auth_logits → [1] → sigmoid
+         *    Evaluate against AUTH_UNCERTAIN_BAND for genuine/fake/uncertain status */
         const authLogit       = (results[AUTH_NODE].data as Float32Array)[0];
         const authenticityScore = sigmoid(authLogit);  // → P(Genuine)
-        const isGenuine         = authenticityScore >= 0.5;
+
+        let authStatus: AuthStatus = "uncertain";
+        if (authenticityScore < AUTH_UNCERTAIN_BAND[0]) {
+          authStatus = "fake";
+        } else if (authenticityScore > AUTH_UNCERTAIN_BAND[1]) {
+          authStatus = "genuine";
+        }
+        const isGenuine = authenticityScore >= 0.5;
 
         /* 8. Build debug rawOutputs */
         const rawOutputs: Record<string, number[]> = {
@@ -242,7 +178,7 @@ export function useOnnx(): UseOnnxReturn {
 
         console.log(
           `[OnnxRuntime] ${denomination} | conf=${denominationConfidence.toFixed(3)}` +
-          ` | auth_logit=${authLogit.toFixed(3)} → ${isGenuine ? "Genuine" : "Fake"}` +
+          ` | auth_logit=${authLogit.toFixed(3)} → status=${authStatus}` +
           ` (p=${authenticityScore.toFixed(3)})`
         );
 
@@ -250,6 +186,7 @@ export function useOnnx(): UseOnnxReturn {
           denomination,
           denominationIndex: denomIdx,
           denominationConfidence,
+          authStatus,
           isGenuine,
           authenticityScore,
           rawOutputs,

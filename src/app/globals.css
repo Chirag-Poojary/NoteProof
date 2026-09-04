@@ -487,6 +487,11 @@ html, body {
   color: var(--clr-text-hi);
   border-style: dashed;
 }
+.authenticity-chip--uncertain {
+  background: #d97706;
+  color: #fff;
+  border-color: #b45309;
+}
 .authenticity-chip__dot {
   width: 6px;
   height: 6px;
